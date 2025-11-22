@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>FunSetpointGameByHamza – Setpoint Chase</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f5;
+    }
+    #container {
+      display: flex;
+      height: 100vh;
+    }
+    #controls {
+      width: 310px;
+      background: #ffffff;
+      border-right: 1px solid #ddd;
+      padding: 14px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #controls h1 {
+      font-size: 18px;
+      margin: 0;
+    }
+    #controls h2 {
+      font-size: 14px;
+      margin: 0;
+      color: #555;
+    }
+    #instructions {
+      font-size: 13px;
+      background: #f0f4ff;
+      padding: 6px 8px;
+      border-radius: 6px;
+    }
+    button {
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #888;
+      background: #fafafa;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover {
+      background: #e8f0ff;
+    }
+    #statusBox {
+      font-size: 12px;
+      background: #f9f9ff;
+      padding: 6px 8px;
+      border-radius: 6px;
+      min-height: 60px;
+    }
+    .slider-group {
+      font-size: 12px;
+    }
+    .slider-group label {
+      display: block;
+      margin-bottom: 2px;
+    }
+    .slider-group input[type="range"] {
+      width: 100%;
+    }
+    #visuals {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      box-sizing: border-box;
+      gap: 8px;
+    }
+    canvas {
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+    #gameCanvas {
+      flex: 1;
+    }
+    #plotCanvas {
+      flex: 1;
+    }
+    select {
+      padding: 3px 4px;
+      border-radius: 4px;
+      border: 1px solid #888;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+<div id="container">
+  <div id="controls">
+    <h1>FunSetpointGameByHamza</h1>
+    <h2>Setpoint Chase – Tune Your Controller</h2>
+
+    <div id="instructions">
+      A cart must follow a moving setpoint on a track.<br><br>
+      • The target position jumps: 0 → 1 → −0.5 → 0.5.<br>
+      • The cart is a 2nd order system.<br>
+      • You tune Kp, Ki, Kd (P / PI / PD / PID).<br><br>
+      Press <b>Play</b> and try to keep the cart close to the target.
+      The score is based on average |error|.
+    </div>
+
+    <div style="font-size:12px;">
+      Controller type:
+      <select id="modeSelect">
+        <option value="P">P</option>
+        <option value="PI" selected>PI</option>
+        <option value="PD">PD</option>
+        <option value="PID">PID</option>
+      </select>
+    </div>
+
+    <div class="slider-group">
+      <label for="kpSlider">Kp:
+        <span id="kpVal"></span>
+      </label>
+      <input type="range" id="kpSlider" min="0" max="10" step="0.1" value="3.0">
+    </div>
+    <div class="slider-group">
+      <label for="kiSlider">Ki:
+        <span id="kiVal"></span>
+      </label>
+      <input type="range" id="kiSlider" min="0" max="3" step="0.05" value="0.5">
+    </div>
+    <div class="slider-group">
+      <label for="kdSlider">Kd:
+        <span id="kdVal"></span>
+      </label>
+      <input type="range" id="kdSlider" min="0" max="3" step="0.05" value="0.6">
+    </div>
+
+    <button id="btnPlay">▶ Play / Re-run</button>
+
+    <div id="statusBox">
+      Run time: <span id="timeVal">0.00</span> s<br>
+      Avg |error|: <span id="errAvgVal">0.00</span><br>
+      Score: <span id="scoreVal">100</span> / 100
+    </div>
+
+    <div style="font-size:12px;color:#555;">
+      Teaching idea: x(t) is cart position, r(t) is setpoint.<br>
+      Good tuning → cart tracks jumps quickly without too much overshoot.
+    </div>
+  </div>
+
+  <div id="visuals">
+    <canvas id="gameCanvas"></canvas>
+    <canvas id="plotCanvas"></canvas>
+  </div>
+</div>
+
+<script>
+  // ===== Canvas setup =====
+  const gameCanvas = document.getElementById("gameCanvas");
+  const plotCanvas = document.getElementById("plotCanvas");
+  const gameCtx = gameCanvas.getContext("2d");
+  const plotCtx = plotCanvas.getContext("2d");
+
+  function resizeCanvases() {
+    const visuals = document.getElementById("visuals");
+    gameCanvas.width = visuals.clientWidth - 16;
+    gameCanvas.height = Math.floor((visuals.clientHeight - 16) / 2);
+    plotCanvas.width = visuals.clientWidth - 16;
+    plotCanvas.height = Math.floor((visuals.clientHeight - 16) / 2);
+  }
+  window.addEventListener("resize", () => {
+    resizeCanvases();
+    if (currentSim) drawFrame(currentSim, currentIndex);
+  });
+  resizeCanvases();
+
+  // ===== UI elements =====
+  const modeSelect = document.getElementById("modeSelect");
+  const kpSlider = document.getElementById("kpSlider");
+  const kiSlider = document.getElementById("kiSlider");
+  const kdSlider = document.getElementById("kdSlider");
+  const kpVal = document.getElementById("kpVal");
+  const kiVal = document.getElementById("kiVal");
+  const kdVal = document.getElementById("kdVal");
+  const btnPlay = document.getElementById("btnPlay");
+  const timeVal = document.getElementById("timeVal");
+  const errAvgVal = document.getElementById("errAvgVal");
+  const scoreVal = document.getElementById("scoreVal");
+
+  function updateGainLabels() {
+    kpVal.textContent = parseFloat(kpSlider.value).toFixed(2);
+    kiVal.textContent = parseFloat(kiSlider.value).toFixed(2);
+    kdVal.textContent = parseFloat(kdSlider.value).toFixed(2);
+  }
+  kpSlider.addEventListener("input", updateGainLabels);
+  kiSlider.addEventListener("input", updateGainLabels);
+  kdSlider.addEventListener("input", updateGainLabels);
+  updateGainLabels();
+
+  // ===== Simulation state =====
+  let currentSim = null;
+  let currentIndex = 0;
+  let animReq = null;
+
+  // Simulate 2nd order plant with PID following a multi-step setpoint
+  function simulateSetpointChase(mode, Kp, Ki, Kd) {
+    const T = 20;    // total time
+    const dt = 0.01; // integration step
+    const N = Math.floor(T / dt) + 1;
+
+    const t = new Array(N);
+    const r = new Array(N);
+    const x = new Array(N);
+    const eArr = new Array(N);
+
+    // 2nd order: x'' + 2*z*wn x' + wn^2 x = wn^2 u
+    const z = 0.3;
+    const wn = 2.5;
+
+    let pos = 0;
+    let vel = 0;
+    let intE = 0;
+    let lastE = 0;
+
+    let cumAbsError = 0;
+
+    for (let i = 0; i < N; i++) {
+      const ti = i * dt;
+      t[i] = ti;
+
+      // piecewise-constant reference
+      let ref = 0;
+      if (ti >= 2 && ti < 5) ref = 1.0;
+      else if (ti >= 5 && ti < 8) ref = -0.5;
+      else if (ti >= 8) ref = 0.5;
+      r[i] = ref;
+
+      const e = ref - pos;
+      eArr[i] = e;
+      cumAbsError += Math.abs(e) * dt;
+
+      intE += e * dt;
+      const de = (i === 0) ? 0 : (e - lastE) / dt;
+      lastE = e;
+
+      let u = 0;
+      if (mode === "P" || mode === "PI" || mode === "PD" || mode === "PID") {
+        u += Kp * e;
+      }
+      if (mode === "PI" || mode === "PID") {
+        u += Ki * intE;
+      }
+      if (mode === "PD" || mode === "PID") {
+        u += Kd * de;
+      }
+
+      // simple saturation
+      const uMax = 8;
+      if (u > uMax) u = uMax;
+      if (u < -uMax) u = -uMax;
+
+      // plant dynamics
+      const xdd = wn*wn*(u - pos) - 2*z*wn*vel;
+      vel += xdd * dt;
+      pos += vel * dt;
+
+      x[i] = pos;
+    }
+
+    const avgAbsError = cumAbsError / T;
+    // Score = 100 - k*avgError (clamped)
+    let score = 100 - 80 * avgAbsError;
+    if (score < 0) score = 0;
+    if (score > 100) score = 100;
+
+    return { t, r, x, e: eArr, T, avgAbsError, score };
+  }
+
+  function startSimulation() {
+    const mode = modeSelect.value;
+    const Kp = parseFloat(kpSlider.value);
+    const Ki = parseFloat(kiSlider.value);
+    const Kd = parseFloat(kdSlider.value);
+
+    const sim = simulateSetpointChase(mode, Kp, Ki, Kd);
+    currentSim = sim;
+    currentIndex = 0;
+
+    timeVal.textContent = sim.T.toFixed(2);
+    errAvgVal.textContent = sim.avgAbsError.toFixed(3);
+    scoreVal.textContent = sim.score.toFixed(0);
+
+    if (animReq !== null) cancelAnimationFrame(animReq);
+    animate();
+  }
+
+  btnPlay.addEventListener("click", startSimulation);
+
+  function animate() {
+    if (!currentSim) return;
+    drawFrame(currentSim, currentIndex);
+    currentIndex++;
+    if (currentIndex < currentSim.t.length) {
+      animReq = requestAnimationFrame(animate);
+    }
+  }
+
+  function drawFrame(sim, k) {
+    const idx = Math.min(k, sim.t.length - 1);
+    drawGame(sim, idx);
+    drawPlot(sim, idx);
+  }
+
+  // ===== Draw top: track + cart + setpoint =====
+  function drawGame(sim, k) {
+    const { t, r, x } = sim;
+    const W = gameCanvas.width;
+    const H = gameCanvas.height;
+    gameCtx.clearRect(0, 0, W, H);
+    if (W === 0 || H === 0) return;
+
+    const trackY = H * 0.6;
+
+    // background
+    gameCtx.fillStyle = "#f5f5f5";
+    gameCtx.fillRect(0, 0, W, H);
+
+    // title
+    gameCtx.fillStyle = "#000";
+    gameCtx.font = "13px sans-serif";
+    gameCtx.fillText("Setpoint chase: cart tries to follow the moving target", 12, 20);
+
+    // track line
+    gameCtx.strokeStyle = "#555";
+    gameCtx.lineWidth = 2;
+    gameCtx.beginPath();
+    gameCtx.moveTo(W * 0.08, trackY);
+    gameCtx.lineTo(W * 0.92, trackY);
+    gameCtx.stroke();
+
+    // mapping from position [-1.5, 1.5] to track x
+    const xMin = -1.5;
+    const xMax = 1.5;
+    function mapPosToPix(pos) {
+      const s = (pos - xMin) / (xMax - xMin);
+      return W * 0.08 + s * (W * 0.84);
+    }
+
+    const pos = x[k];
+    const ref = r[k];
+    const cartX = mapPosToPix(pos);
+    const refX = mapPosToPix(ref);
+
+    // target flag
+    const flagH = 26;
+    gameCtx.strokeStyle = "#b71c1c";
+    gameCtx.lineWidth = 2;
+    gameCtx.beginPath();
+    gameCtx.moveTo(refX, trackY);
+    gameCtx.lineTo(refX, trackY - flagH);
+    gameCtx.stroke();
+    gameCtx.fillStyle = "#ef5350";
+    gameCtx.beginPath();
+    gameCtx.moveTo(refX, trackY - flagH);
+    gameCtx.lineTo(refX + 16, trackY - flagH + 6);
+    gameCtx.lineTo(refX, trackY - flagH + 12);
+    gameCtx.closePath();
+    gameCtx.fill();
+    gameCtx.fillStyle = "#000";
+    gameCtx.font = "11px sans-serif";
+    gameCtx.fillText("Target", refX + 18, trackY - flagH + 10);
+
+    // cart
+    const cartW = 40;
+    const cartH = 20;
+    gameCtx.fillStyle = "#4caf50";
+    gameCtx.fillRect(cartX - cartW / 2, trackY - cartH, cartW, cartH);
+    gameCtx.strokeStyle = "#1b5e20";
+    gameCtx.lineWidth = 2;
+    gameCtx.strokeRect(cartX - cartW / 2, trackY - cartH, cartW, cartH);
+
+    // wheels
+    gameCtx.fillStyle = "#333";
+    gameCtx.beginPath();
+    gameCtx.arc(cartX - cartW/3, trackY, 5, 0, 2*Math.PI);
+    gameCtx.arc(cartX + cartW/3, trackY, 5, 0, 2*Math.PI);
+    gameCtx.fill();
+
+    // info
+    gameCtx.fillStyle = "#000";
+    gameCtx.font = "12px sans-serif";
+    gameCtx.fillText(`t = ${t[k].toFixed(2)} s`, W - 120, 22);
+    gameCtx.fillText(`x ≈ ${pos.toFixed(2)}`, W - 120, 38);
+    gameCtx.fillText(`r ≈ ${ref.toFixed(2)}`, W - 120, 54);
+  }
+
+  // ===== Draw bottom: plot of x(t), r(t), error =====
+  function drawPlot(sim, k) {
+    const { t, r, x } = sim;
+    const W = plotCanvas.width;
+    const H = plotCanvas.height;
+    plotCtx.clearRect(0, 0, W, H);
+    if (W === 0 || H === 0) return;
+
+    const left = 40, right = W - 15, top = 10, bottom = H - 30;
+
+    // axes
+    plotCtx.strokeStyle = "#444";
+    plotCtx.lineWidth = 1;
+    plotCtx.beginPath();
+    plotCtx.moveTo(left, top);
+    plotCtx.lineTo(left, bottom);
+    plotCtx.lineTo(right, bottom);
+    plotCtx.stroke();
+
+    // labels
+    plotCtx.fillStyle = "#000";
+    plotCtx.font = "12px sans-serif";
+    plotCtx.fillText("Time (s)", right - 55, H - 6);
+    plotCtx.save();
+    plotCtx.translate(14, (top + bottom) / 2);
+    plotCtx.rotate(-Math.PI / 2);
+    plotCtx.fillText("Position", -28, 0);
+    plotCtx.restore();
+
+    const N = t.length;
+    const idxMax = Math.min(k, N - 1);
+    const tMax = t[N - 1];
+    const tMin = 0;
+
+    // y limits based on data and setpoints
+    let yMin = Math.min(...x, ...r, -1.6);
+    let yMax = Math.max(...x, ...r, 1.6);
+    if (yMax - yMin < 0.3) {
+      yMax += 0.15;
+      yMin -= 0.15;
+    }
+
+    // grid lines
+    plotCtx.strokeStyle = "#ddd";
+    plotCtx.setLineDash([3,3]);
+    for (let v = Math.ceil(yMin*2)/2; v <= yMax; v += 0.5) {
+      const yPix = bottom - (v - yMin)/(yMax - yMin)*(bottom - top);
+      plotCtx.beginPath();
+      plotCtx.moveTo(left, yPix);
+      plotCtx.lineTo(right, yPix);
+      plotCtx.stroke();
+      plotCtx.fillStyle = "#444";
+      plotCtx.setLineDash([]);
+      plotCtx.fillText(v.toFixed(1), 8, yPix + 4);
+      plotCtx.setLineDash([3,3]);
+    }
+    plotCtx.setLineDash([]);
+
+    // reference r(t)
+    plotCtx.strokeStyle = "#9e9e9e";
+    plotCtx.lineWidth = 1.5;
+    plotCtx.beginPath();
+    for (let i = 0; i <= idxMax; i++) {
+      const xi = left + (t[i] - tMin) / (tMax - tMin) * (right - left);
+      const yi = bottom - (r[i] - yMin) / (yMax - yMin) * (bottom - top);
+      if (i === 0) plotCtx.moveTo(xi, yi);
+      else plotCtx.lineTo(xi, yi);
+    }
+    plotCtx.stroke();
+
+    // output x(t)
+    plotCtx.strokeStyle = "#2a7ae2";
+    plotCtx.lineWidth = 2;
+    plotCtx.beginPath();
+    for (let i = 0; i <= idxMax; i++) {
+      const xi = left + (t[i] - tMin) / (tMax - tMin) * (right - left);
+      const yi = bottom - (x[i] - yMin) / (yMax - yMin) * (bottom - top);
+      if (i === 0) plotCtx.moveTo(xi, yi);
+      else plotCtx.lineTo(xi, yi);
+    }
+    plotCtx.stroke();
+
+    // legend box
+    plotCtx.fillStyle = "rgba(255,255,255,0.85)";
+    plotCtx.fillRect(right - 150, top + 6, 140, 40);
+    plotCtx.fillStyle = "#000";
+    plotCtx.font = "11px sans-serif";
+    plotCtx.fillText("Grey = setpoint r(t)", right - 145, top + 20);
+    plotCtx.fillText("Blue = cart x(t)", right - 145, top + 34);
+  }
+
+  // ===== Initial run so page is not empty =====
+  (function init() {
+    const mode = modeSelect.value;
+    const Kp = parseFloat(kpSlider.value);
+    const Ki = parseFloat(kiSlider.value);
+    const Kd = parseFloat(kdSlider.value);
+    const sim = simulateSetpointChase(mode, Kp, Ki, Kd);
+    currentSim = sim;
+    currentIndex = sim.t.length - 1;
+    timeVal.textContent = sim.T.toFixed(2);
+    errAvgVal.textContent = sim.avgAbsError.toFixed(3);
+    scoreVal.textContent = sim.score.toFixed(0);
+    drawFrame(sim, currentIndex);
+  })();
+</script>
+</body>
+</html>
